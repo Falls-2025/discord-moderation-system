@@ -12,80 +12,72 @@ MODEL_ID = "Franklin001/sentimental"
 DATA_DIR = "./data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# Load sentiment model from Hugging Face
+# Load model once
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 model = AutoModelForSequenceClassification.from_pretrained(MODEL_ID)
 model.eval()
 
 
-# -------- TIME PARSER & FORMATTER --------
+# -------- TIME PARSER --------
 def parse_time_input(time_str: str):
-    """Accepts 5m, 5mn, 5 min, 2h, 1d etc., returns total minutes as int"""
     time_str = time_str.lower().strip()
 
-    # Minutes
-    minute_patterns = [
-        r"^(\d+)\s*m$", r"^(\d+)\s*mn$", r"^(\d+)\s*min$",
-        r"^(\d+)\s*mins$", r"^(\d+)\s*minute$", r"^(\d+)\s*minutes$"
-    ]
+    minute_patterns = [r"^(\d+)\s*m$", r"^(\d+)\s*mn$", r"^(\d+)\s*min$", r"^(\d+)\s*mins$", r"^(\d+)\s*minute$", r"^(\d+)\s*minutes$"]
     for p in minute_patterns:
-        match = re.match(p, time_str)
-        if match:
-            return int(match.group(1))
+        m = re.match(p, time_str)
+        if m: return int(m.group(1))
 
-    # Hours
-    hour_patterns = [
-        r"^(\d+)\s*h$", r"^(\d+)\s*hr$", r"^(\d+)\s*hrs$",
-        r"^(\d+)\s*hour$", r"^(\d+)\s*hours$"
-    ]
+    hour_patterns = [r"^(\d+)\s*h$", r"^(\d+)\s*hr$", r"^(\d+)\s*hrs$", r"^(\d+)\s*hour$", r"^(\d+)\s*hours$"]
     for p in hour_patterns:
-        match = re.match(p, time_str)
-        if match:
-            return int(match.group(1)) * 60
+        m = re.match(p, time_str)
+        if m: return int(m.group(1)) * 60
 
-    # Days
-    day_patterns = [
-        r"^(\d+)\s*d$", r"^(\d+)\s*day$", r"^(\d+)\s*days$"
-    ]
+    day_patterns = [r"^(\d+)\s*d$", r"^(\d+)\s*day$", r"^(\d+)\s*days$"]
     for p in day_patterns:
-        match = re.match(p, time_str)
-        if match:
-            return int(match.group(1)) * 24 * 60
+        m = re.match(p, time_str)
+        if m: return int(m.group(1)) * 24 * 60
 
     return None
 
 
 def format_time(minutes: int):
-    """Convert minutes → user-friendly format, e.g., 2 hours 5 minutes"""
     hours = minutes // 60
     mins = minutes % 60
     parts = []
-    if hours > 0:
-        parts.append(f"{hours} hour" + ("s" if hours != 1 else ""))
-    if mins > 0:
-        parts.append(f"{mins} minute" + ("s" if mins != 1 else ""))
+    if hours > 0: parts.append(f"{hours} hour" + ("s" if hours != 1 else ""))
+    if mins > 0:  parts.append(f"{mins} minute" + ("s" if mins != 1 else ""))
     return " ".join(parts) if parts else "0 minutes"
 
 
-# -------- SENTIMENT HELPER --------
-def analyze_sentiment(text):
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
+# -------- FAST BATCH SENTIMENT --------
+def analyze_batch(texts):
+    """Run sentiment for all messages in ONE batch (much faster)."""
+    inputs = tokenizer(texts, return_tensors="pt", truncation=True, padding=True)
+
     with torch.no_grad():
         outputs = model(**inputs)
         probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
-        confidence, label = torch.max(probs, dim=1)
+
+    confidences, labels = torch.max(probs, dim=1)
+
     label_map = {0: "Negative", 1: "Neutral", 2: "Positive"}
-    return label_map[label.item()], confidence.item()
+
+    results = []
+    for label, conf in zip(labels.tolist(), confidences.tolist()):
+        results.append((label_map[label], conf))
+
+    return results
 
 
 def generate_thick_bar(percentage, length=10):
-    """Create a thick unicode bar using ▰ and ▱"""
     filled_units = int(round(length * percentage / 100))
     empty_units = length - filled_units
     return "▰" * filled_units + "▱" * empty_units
 
 
-# -------- MAIN COG --------
+# ===========================================================
+# MAIN COG
+# ===========================================================
 class Sentiment(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -93,25 +85,15 @@ class Sentiment(commands.Cog):
 
     @commands.command()
     async def analyze(self, ctx, *, time_input: str = "24h"):
-        """Analyze messages from a custom time window."""
         minutes = parse_time_input(time_input)
         if minutes is None:
-            await ctx.send(
-                "❌ Invalid time format.\n"
-                "Examples:\n"
-                "`5m`, `5mn`, `5 mins`, `5 minutes`\n"
-                "`2h`, `2hr`, `2 hours`\n"
-                "`1d`, `2 days`"
-            )
-            return
+            return await ctx.send("❌ Invalid time format. Example: `5m`, `2h`, `1d`")
 
-        # Minimum/Maximum limits
         if minutes < 5:
-            await ctx.send("⚠️ Minimum allowed is **5 minutes**.")
-            return
-        if minutes > 7 * 24 * 60:
-            await ctx.send("⚠️ Maximum allowed is **7 days**.")
-            return
+            return await ctx.send("⚠️ Minimum allowed is **5 minutes**.")
+
+        if minutes > 10080:  # 7 days
+            return await ctx.send("⚠️ Maximum allowed is **7 days**.")
 
         now_local = datetime.now(self.local_tz)
         since_local = now_local - timedelta(minutes=minutes)
@@ -119,66 +101,68 @@ class Sentiment(commands.Cog):
 
         await ctx.send(f"🕒 Fetching messages from the last **{friendly_time}**...")
 
-        # Fetch messages
+        # -------- FAST HISTORY FETCH --------
         messages = []
-        async for message in ctx.channel.history(limit=None):
-            # Convert UTC -> Local
-            local_time = message.created_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(self.local_tz)
+        async for msg in ctx.channel.history(limit=2000, oldest_first=False):
+            local_time = msg.created_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(self.local_tz)
+
             if local_time < since_local:
+                break  # stop early (HUGE SPEED BOOST)
+
+            if msg.author.bot or msg.content.startswith("!"):
                 continue
-            if message.author.bot or message.content.startswith("!"):
-                continue
-            messages.append([local_time.isoformat(), message.author.name, message.content])
+
+            messages.append([local_time.isoformat(), msg.author.name, msg.content])
 
         if not messages:
-            await ctx.send("⚠️ No messages found in that time range.")
-            return
+            return await ctx.send("⚠️ No messages found in that time range.")
 
-        # Analyze messages
-        results = []
-        for time_str, author, text in messages:
-            sentiment, confidence = analyze_sentiment(text)
-            results.append((time_str, author, text, sentiment, confidence))
+        # -------- BATCH MODEL INFERENCE --------
+        texts = [m[2] for m in messages]
+        batch_results = analyze_batch(texts)
 
-        # Summary stats
-        total = len(results)
-        pos = sum(1 for _, _, _, s, _ in results if s == "Positive")
-        neu = sum(1 for _, _, _, s, _ in results if s == "Neutral")
-        neg = sum(1 for _, _, _, s, _ in results if s == "Negative")
-        avg_conf = sum(c for _, _, _, _, c in results) / total * 100
+        full_results = []
+        for (time_str, author, text), (sentiment, conf) in zip(messages, batch_results):
+            full_results.append((time_str, author, text, sentiment, conf))
+
+        # -------- SUMMARY --------
+        total = len(full_results)
+        pos = sum(1 for x in full_results if x[3] == "Positive")
+        neu = sum(1 for x in full_results if x[3] == "Neutral")
+        neg = sum(1 for x in full_results if x[3] == "Negative")
+
+        avg_conf = sum(x[4] for x in full_results) / total * 100
 
         pos_pct = pos / total * 100
         neu_pct = neu / total * 100
         neg_pct = neg / total * 100
 
-        # Decide word
-        pos_word = "messages" if pos > 1 else "message"
-        neu_word = "messages" if neu > 1 else "message"
-        neg_word = "messages" if neg > 1 else "message"
+        # plural
+        pos_word = "message" if pos == 1 else "messages"
+        neu_word = "message" if neu == 1 else "messages"
+        neg_word = "message" if neg == 1 else "messages"
 
-        # Fix width for alignment
         max_count_len = max(len(str(pos)), len(str(neu)), len(str(neg)))
-        word_width = len("messages")  # the longest word
-        count_word_format = f"{{count:>{max_count_len}}} {{word:<{word_width}}}"
+        word_width = len("messages")
+        fmt = f"{{count:>{max_count_len}}} {{word:<{word_width}}}"
 
         lines = [
             f"📊 Sentiment Summary (Last {friendly_time})\n",
-            f"🟢 Positive  {count_word_format.format(count=pos, word=pos_word)}  │  {generate_thick_bar(pos_pct)}  {pos_pct:5.1f}%",
-            f"⚪ Neutral   {count_word_format.format(count=neu, word=neu_word)}  │  {generate_thick_bar(neu_pct)}  {neu_pct:5.1f}%",
-            f"🔴 Negative  {count_word_format.format(count=neg, word=neg_word)}  │  {generate_thick_bar(neg_pct)}  {neg_pct:5.1f}%",
+            f"🟢 Positive  {fmt.format(count=pos, word=pos_word)}  │  {generate_thick_bar(pos_pct)}  {pos_pct:5.1f}%",
+            f"⚪ Neutral   {fmt.format(count=neu, word=neu_word)}  │  {generate_thick_bar(neu_pct)}  {neu_pct:5.1f}%",
+            f"🔴 Negative  {fmt.format(count=neg, word=neg_word)}  │  {generate_thick_bar(neg_pct)}  {neg_pct:5.1f}%",
             f"\n📦 Total Messages : {total}",
-            f"🎯 Avg Confidence : {avg_conf:.2f}%",
+            f"🎯 Avg Confidence : {avg_conf:.2f}%"
         ]
-
 
         await ctx.send("```\n" + "\n".join(lines) + "\n```")
 
-        # Save CSV
+        # -------- SAVE CSV --------
         csv_file = os.path.join(DATA_DIR, "analyzed_messages.csv")
-        with open(csv_file, "w", newline="", encoding="utf-8") as f:
+        with open(csv_file, "w", encoding="utf-8", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["time", "author", "message", "sentiment", "confidence"])
-            writer.writerows(results)
+            writer.writerows(full_results)
 
         await ctx.send("✅ Sentiment analysis complete.")
 
