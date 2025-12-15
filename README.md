@@ -13,7 +13,8 @@ Uses local Hugging Face RoBERTa models (provided in `./models/`) and stores logs
 * Clean summary embeds with counts, percentages, and average model confidence
 * Local CSV logging of raw and analyzed messages
 * Automatic message deletion for off-topic messages after warning
-V
+  V
+
 ---
 
 ## Discord Bot Link Invitation
@@ -75,7 +76,7 @@ Used for:
 
 ### Sentiment Analysis Commands
 
-* `!analyze <time>`
+* `!analyze <time>	pip `
   Fetches messages from the specified time window in the current channel, runs sentiment analysis, and posts a summary embed with counts, percentages, and average model confidence.
 
   **Parameters:**
@@ -100,6 +101,7 @@ Used for:
 !analyze 2h      → Analyze messages from the last 2 hours
 !analyze 1 day   → Analyze messages from the last 1 day
 ```
+
 ---
 
 ### Topic Filter Commands
@@ -111,7 +113,6 @@ Used for:
   ```
   !topicset Sports
   ```
-
 * `!topicget`
   Check the current topic set for this channel.
   Example:
@@ -119,7 +120,6 @@ Used for:
   ```
   !topicget
   ```
-
 * `!topiclist`
   Show all available topics that the bot can classify.
   Example:
@@ -127,7 +127,6 @@ Used for:
   ```
   !topiclist
   ```
-
 * `!topicclear`
   Removes topic filtering from the current channel.
   Example:
@@ -162,4 +161,3 @@ World, Sports, Business, Sci/Tech
 * Make sure your model directories contain **all required files** (`config.json`, `model.safetensors`, tokenizer files, etc.)
 
 ---
-
