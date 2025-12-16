@@ -55,7 +55,7 @@ You can download or update the model weights from the following links:
 ### 🔵 Sentiment Classification Model
 
 **Hugging Face Link:**
-➡️ [https://huggingface.co/Franklin001/sentimental](https://huggingface.co/Franklin001/sentimental)
+➡️ [https://huggingface.co/Franklin001/sentimental](https://huggingface.co/chanhengmenh/discord_moderation_system)
 
 Used for:
 
